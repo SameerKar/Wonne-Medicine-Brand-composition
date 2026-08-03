@@ -2,8 +2,8 @@ import { httpServerHandler } from "cloudflare:node";
 import express from "express";
 import cors from "cors";
 
-// We import the new Brand-first priority logic
-import { searchMedicinePriority } from "./search/brandThenCompositionSearch.js";
+// We import the new Unified Brand-first priority logic
+import { searchMedicine } from "./search/omniIndex.js";
 
 const app = express();
 app.use(cors());
@@ -28,7 +28,7 @@ app.post("/", (req, res) => {
     return res.status(400).json({ error: "A valid 'query' string is required." });
   }
   // Funnels directly into the new priority logic
-  return res.json(searchMedicinePriority(searchInput));
+  return res.json(searchMedicine(searchInput));
 });
 
 // ==========================================
@@ -40,7 +40,7 @@ app.post("/medicine_lookup", (req, res) => {
     return res.status(400).json({ error: "A valid 'query' string is required." });
   }
   // CHANGED: Now forces the new priority logic instead of omniIndex
-  return res.json(searchMedicinePriority(searchInput));
+  return res.json(searchMedicine(searchInput));
 });
 
 // ==========================================
@@ -51,7 +51,7 @@ app.post("/composition_lookup", (req, res) => {
   if (!searchInput || typeof searchInput !== "string") {
     return res.status(400).json({ error: "A valid 'query' string is required." });
   }
-  return res.json(searchMedicinePriority(searchInput));
+  return res.json(searchMedicine(searchInput));
 });
 
 // Catch-all 404 Fallback
