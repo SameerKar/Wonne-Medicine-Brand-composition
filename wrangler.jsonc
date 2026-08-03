@@ -1,0 +1,16 @@
+{
+  "name": "omni-search-medicine-api",
+  "main": "src/index.js",
+  "compatibility_date": "2025-09-23",
+  "compatibility_flags": [
+    "nodejs_compat",
+    "enable_nodejs_http_modules",
+    "enable_nodejs_http_server_modules"
+  ],
+  "alias": {
+    "iconv-lite": "./src/polyfills/iconv-lite-stub.js"
+  },
+  "observability": {
+    "enabled": true
+  }
+}

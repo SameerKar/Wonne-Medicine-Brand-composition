@@ -1,0 +1,29 @@
+# Dependencies - never commit these, they are heavy (100MB+)
+node_modules/
+
+# Wrangler local dev cache
+.wrangler/
+
+# Environment variables - keep secrets out of git
+.env
+.env.local
+.env.*.local
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# Logs
+*.log
+npm-debug.log*
+
+# Local testing
+interactive_test.js  
