@@ -10,27 +10,26 @@ Voice AI often struggles with pharmaceutical terms due to phonetic misspellings 
 .
 ├── package.json
 ├── wrangler.jsonc
-├── phonetic_test.mjs             # 67-case test suite for phonetic edge cases (97% accuracy)
 ├── WonneAgentPrompt.md           # Maansi Agent System Prompt & Guidelines
 └── src/
     ├── index.js                  # Express app + Worker entry point
     ├── data/
     │   └── medicines.js          # Shared medicine database
     └── search/
-        ├── brandSearch.js                   # Strict Brand Name indexer and fuzzy-matcher
-        ├── compositionSearch.js             # Voice-Optimized 4-Layer Phonetic Search Engine
-        └── brandThenCompositionSearch.js    # Coordinator handling priority and fallback logic
+        └── omniIndex.js          # Unified Brand-First & Composition Fallback Search Engine
 ```
 
-The API first runs the spoken input against the Brand Name index. If no high-confidence brand matches are found, it routes to a 4-layered composition pipeline designed specifically for Voice AI.
+The API now runs everything unified from **`omniIndex.js`**. Upon startup, it builds two independent indexes: `brandMapping` and `compMapping`. 
 
 ```text
-Raw Spoken Input (e.g., "safe tree exon" or "Paravel")
+Raw Spoken Input (e.g., "Clinic D", "Rabaval PF", or "safe tree exon")
        │
-       ├──► 1. Brand Index Fuzzy Match
-       │       - Matches > 80% confidence returned immediately.
+       ├──► 1. Brand Index Strict Match (token_sort_ratio)
+       │       - Matches against full brand names directly. 
+       │       - High score (≥ 80) returned immediately, bypassing composition.
+       │       - Fixes false positives (e.g. "Clinic D" falsely matching "Nervabin D").
        │
-       ▼  (If Brand Match Fails)
+       ▼  (If Brand Match Fails - Score < 80)
 2. Phonetic Normalizer & Alias Expansion
    - Hardcoded aliases for severely mangled STT (e.g., "safe tree exon" → "ceftriaxone")
    - Indian-accent STT fixes (e.g., C→S, ks→x, -sin→cin, -rin→rine)
@@ -41,20 +40,27 @@ Raw Spoken Input (e.g., "safe tree exon" or "Paravel")
    - Strips retailer salt descriptors (hydrochloride, sodium, cholic, acid, etc.)
        │
        ▼
-4. Multi-Form Fuzzy Scoring (fuzzball)
-   - token_set_ratio checks standard spaced forms.
-   - compactQuery vs cleanComp catches STT split-words ("methyl cobalamin" → "methylcobalamin").
-   - partial_ratio catches terminal vowel drops on single words ("Metronidazol").
-   - caps scores of multi-salt combinations for single-token queries.
+4. Multi-Form Fuzzy Scoring (fuzzball token_set_ratio)
+   - checks standard spaced forms against the Composition Index.
+   - partial_ratio catches terminal vowel drops on single words.
        │
        ▼
 5. Character Overlap Gate (Anti-False-Positive Filter)
-   - If score is borderline (80-85), it must share ≥ 55% of unique characters.
-   - Prevents wrong-suffix accidents (e.g., Azithrocillin matching Azithromycin).
+   - If composition score is borderline (80-85), it must share ≥ 55% of unique characters.
        │
        ▼
    Status Output → Directly maps to Agent Matrix
 ```
+
+## 📊 Understanding Confidence Scores
+
+The `confidence` score (0 to 100) dictates how the voice agent responds:
+- **100**: Perfect identical match.
+- **85 - 99**: Highly confident match (minor STT misspelling). Triggers `exact_match` or `multiple_exact_matches`.
+- **80 - 84**: Borderline match. The spelling is heavily distorted, but mathematically plausible. Triggers `multiple_options` (Gate C) where the agent asks the user to clarify.
+- **< 80**: Ignored.
+
+*Note: In `omniIndex.js`, if multiple **different** Brand Names score above 85 (e.g., Rabaval A vs Rabaval D), the API deliberately downgrades the status to `multiple_options` to prevent the agent from assuming it's exactly what the user wanted.*
 
 ## 🤖 AI Agent Integration (The 4-Gate Routing Matrix)
 
