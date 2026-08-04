@@ -1,48 +1,48 @@
-import { token_set_ratio, partial_ratio, token_sort_ratio, extract } from "fuzzball";
+import { token_set_ratio, partial_ratio, token_sort_ratio, ratio, extract } from "fuzzball";
 import { medicineDb } from "../data/medicines.js";
 
 // ==========================================
 // UNIFIED BRAND-FIRST + COMPOSITION FALLBACK
 // ==========================================
-
-const brandMapping = {};
-const compMapping = {}; // Keep for structural consistency, though we iterate DB directly for comp
-
-function buildOmniIndexes() {
-  for (const item of medicineDb) {
-    const brand = item["Brand Name"];
-    const comp = item["Composition"];
-
-    // 1. Index the Brand Name
-    if (brand && brand.toLowerCase() !== "null") {
-      const bKey = brand.toLowerCase().trim();
-      if (!brandMapping[bKey]) {
-        brandMapping[bKey] = [];
-      }
-      brandMapping[bKey].push(item);
-    }
-
-    // 2. Index the Composition
-    if (comp && !comp.toLowerCase().includes("not available")) {
-      const cKey = comp.toLowerCase().trim();
-      if (!compMapping[cKey]) {
-        compMapping[cKey] = [];
-      }
-      compMapping[cKey].push(item);
-    }
-  }
-}
-
-// Build the indexes once at load time.
-buildOmniIndexes();
-const brandKeys = Object.keys(brandMapping);
-
-console.log(`System Ready: Mapped ${brandKeys.length} unique Brand terms and ${Object.keys(compMapping).length} Composition terms.`);
+// Part A: Universal algorithmic fixes
+// Part B: Medicine/pharma-specific fixes
 
 // ─────────────────────────────────────────────────────────────
-// PHONETIC NORMALIZERS & SCRUBBERS (From Composition Engine)
+// INDEX STRUCTURES
+// ─────────────────────────────────────────────────────────────
+const brandMapping = {};              // raw lowercase brand → [items]
+const normalizedBrandMapping = {};    // A3: scrubbed brand → [items]
+const compMapping = {};               // composition key → [items]
+
+// ─────────────────────────────────────────────────────────────
+// B1: BRAND ALIASES — Known STT garbles from real transcripts
+// Fast-path correction applied BEFORE fuzzy scoring
+// ─────────────────────────────────────────────────────────────
+const BRAND_ALIASES = {
+  "zozid":      "zozith",
+  "zosid":      "zozith",
+  "zozeth":     "zozith",
+  "zozaeth":    "zozith",
+  "zo-zozaeth": "zozith",
+  "zozozaeth":  "zozith",
+  "zo-zozeth":  "zozith",
+  "zozozeth":   "zozith",
+  "zo-zozid":   "zozith",
+  "nibotrax":   "nivotrax",
+  "nibotraks":  "nivotrax",
+  "losepul":    "lospule",
+  "losepule":   "lospule",
+  "tableton":   "tebulon",
+  "tebulan":    "tebulon",
+  "cefeval":    "cefaval",
+  "cefavl":    "cefaval",
+};
+
+// ─────────────────────────────────────────────────────────────
+// PHONETIC NORMALIZERS & SCRUBBERS
 // ─────────────────────────────────────────────────────────────
 function phoneticNormalize(str) {
+  // Composition-specific aliases (existing, kept intact)
   const ALIASES = {
     "ceftriaxone": ["safe tree exon", "safetria exon", "safetria-exon", "pre-exon", "seftriaxon", "septriaxone"],
     "cefixime":    ["sefixime", "sefixim"],
@@ -75,12 +75,29 @@ function phoneticNormalize(str) {
     .replace(/pin\b/g, "pine");
 }
 
+// Original scrubNoise — used for composition matching (strips "plus", "lb", etc.)
 function scrubNoise(inputStr) {
   return inputStr
     .toLowerCase()
     .replace(/\b(mg|ml|gm|mcg|iu|spores|tablet|capsule|syrup|drop|plus|injection|sr|er|xr|dt|lb|ip|usp|bp|hcl|hbr)\b/gi, "")
     .replace(/\b(hydrochloride|hydro|chloride|sulphate|sulfate|sodium|potassium|acid|cholic|oxide|nitrate|citrate|gluconate|acetate|tartrate|succinate|fumarate|maleate|monohydrate|trihydrate|dihydrate|anhydrous|anhydrous|phosphate|carbonate|bicarbonate)\b/gi, "")
     .replace(/[0-9]+(\.[0-9]+)?/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+// B3: Brand-aware scrubNoise — preserves pharma modifiers that distinguish products
+function brandScrubNoise(inputStr) {
+  return inputStr
+    .toLowerCase()
+    // Strip units and dosage forms
+    .replace(/\b(mg|ml|gm|mcg|iu|spores|tablet|capsule|syrup|drop|injection|ip|usp|bp|hcl|hbr)\b/gi, "")
+    // Strip chemical descriptors
+    .replace(/\b(hydrochloride|hydro|chloride|sulphate|sulfate|sodium|potassium|acid|cholic|oxide|nitrate|citrate|gluconate|acetate|tartrate|succinate|fumarate|maleate|monohydrate|trihydrate|dihydrate|anhydrous|phosphate|carbonate|bicarbonate)\b/gi, "")
+    // Strip numbers
+    .replace(/[0-9]+(\.[0-9]+)?/g, "")
+    // DO NOT strip: plus, forte, gold, duo, cv, lb, oz, sr, er, xr, dt
+    // These are pharma brand modifiers that distinguish products
     .replace(/\s{2,}/g, " ")
     .trim();
 }
@@ -93,52 +110,321 @@ function charOverlapRatio(a, b) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// A2: Universal Name/Number Splitter
+// ─────────────────────────────────────────────────────────────
+function splitBrandParts(str) {
+  const clean = str.toLowerCase().trim();
+  const numbers = clean.match(/\d+(?:\.\d+)?/g) || [];
+  const namePart = clean
+    .replace(/\d+(?:\.\d+)?/g, "")
+    .replace(/[\s\-\.]+/g, " ")
+    .trim();
+  return { name: namePart, numbers };
+}
+
+// A7: Extract numbers from any string
+function extractNumbers(str) {
+  return (str.match(/\d+(?:\.\d+)?/g) || []);
+}
+
+// ─────────────────────────────────────────────────────────────
+// A4: Multi-Scorer Brand Matching
+// Returns the best fuzzy score from complementary algorithms
+// ─────────────────────────────────────────────────────────────
+function multiBrandScore(query, brandKey) {
+  return Math.max(
+    ratio(query, brandKey),
+    token_sort_ratio(query, brandKey)
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// A6: Length-Aware Dynamic Thresholds
+// Shorter strings need lower thresholds because 1-char error
+// has proportionally higher impact
+// ─────────────────────────────────────────────────────────────
+function getBrandAcceptThreshold(queryLength) {
+  if (queryLength <= 4) return 55;
+  if (queryLength <= 6) return 60;
+  if (queryLength <= 9) return 65;
+  return 70;
+}
+
+function getBrandStrongThreshold(queryLength) {
+  if (queryLength <= 6) return 73;
+  if (queryLength <= 9) return 75;
+  return 78;
+}
+
+function getBrandExactThreshold(queryLength) {
+  if (queryLength <= 6) return 78;
+  if (queryLength <= 9) return 80;
+  return 82;
+}
+
+// ─────────────────────────────────────────────────────────────
+// B2: Phonetic Variant Generator
+// Generates alternative query forms for common Indian-English
+// consonant confusions. Safe: doesn't mutate original, just
+// explores alternatives during scoring.
+// ─────────────────────────────────────────────────────────────
+function generatePhoneticVariants(query) {
+  const variants = [query];
+
+  // d/th confusion (very common in Hindi STT: "zozid" ↔ "zozith")
+  if (/th/.test(query)) {
+    variants.push(query.replace(/th/g, "d"));
+  }
+  if (/d/.test(query)) {
+    variants.push(query.replace(/d\b/g, "th"));    // terminal d → th
+    variants.push(query.replace(/d/g, "th"));       // any d → th
+  }
+
+  // b/v confusion (common in Hindi: "nibo" ↔ "nivo")
+  if (query.includes("b")) {
+    variants.push(query.replace(/b/g, "v"));
+  }
+  if (query.includes("v")) {
+    variants.push(query.replace(/v/g, "b"));
+  }
+
+  // s/z confusion
+  if (query.includes("s") && !query.includes("sh")) {
+    variants.push(query.replace(/s/g, "z"));
+  }
+  if (query.includes("z")) {
+    variants.push(query.replace(/z/g, "s"));
+  }
+
+  return [...new Set(variants)];
+}
+
+// ─────────────────────────────────────────────────────────────
+// BUILD INDEXES
+// ─────────────────────────────────────────────────────────────
+function buildOmniIndexes() {
+  for (const item of medicineDb) {
+    const brand = item["Brand Name"];
+    const comp = item["Composition"];
+
+    // 1. Index the Brand Name (raw)
+    if (brand && brand.toLowerCase() !== "null") {
+      const bKey = brand.toLowerCase().trim();
+      if (!brandMapping[bKey]) {
+        brandMapping[bKey] = [];
+      }
+      brandMapping[bKey].push(item);
+
+      // A3: Normalized index (symmetric with query processing)
+      const normKey = brandScrubNoise(phoneticNormalize(brand));
+      if (normKey) {
+        if (!normalizedBrandMapping[normKey]) {
+          normalizedBrandMapping[normKey] = [];
+        }
+        normalizedBrandMapping[normKey].push(item);
+      }
+    }
+
+    // 2. Index the Composition
+    if (comp && !comp.toLowerCase().includes("not available")) {
+      const cKey = comp.toLowerCase().trim();
+      if (!compMapping[cKey]) {
+        compMapping[cKey] = [];
+      }
+      compMapping[cKey].push(item);
+    }
+  }
+}
+
+// Build the indexes once at load time.
+buildOmniIndexes();
+const brandKeys = Object.keys(brandMapping);
+const normalizedBrandKeys = Object.keys(normalizedBrandMapping);
+
+console.log(`System Ready: Mapped ${brandKeys.length} unique Brand terms, ${normalizedBrandKeys.length} normalized Brand terms, and ${Object.keys(compMapping).length} Composition terms.`);
+
+// ─────────────────────────────────────────────────────────────
 // MAIN SEARCH COORDINATOR
 // ─────────────────────────────────────────────────────────────
 export function searchMedicine(query) {
   const normalized  = phoneticNormalize(query);
   const cleanQuery  = scrubNoise(normalized);
+  const brandCleanQuery = brandScrubNoise(normalized); // B3: preserves "plus", "lb", etc.
+
+  // Determine the effective brand query (use brandCleanQuery for brand, cleanQuery for comp)
+  const effectiveBrandQuery = brandCleanQuery || cleanQuery;
+  const queryLength = effectiveBrandQuery.replace(/\s+/g, "").length;
+
+  // Dynamic thresholds based on query length (A6)
+  const ACCEPT_THRESHOLD = getBrandAcceptThreshold(queryLength);
+  const STRONG_THRESHOLD = getBrandStrongThreshold(queryLength);
+  const EXACT_THRESHOLD  = getBrandExactThreshold(queryLength);
 
   // ==============================================================
-  // PASS 1: BRAND SEARCH (Strict `token_sort_ratio`)
+  // PASS 1: BRAND SEARCH — Multi-Tier, Multi-Scorer (A5)
   // ==============================================================
-  const brandResults = extract(cleanQuery, brandKeys, {
-    scorer: token_sort_ratio,
-    limit: 5,
-  });
-
   const finalBrandMatches = {};
-  let brandHighestScore = brandResults.length > 0 ? brandResults[0][1] : 0;
+  let brandHighestScore = 0;
 
-  for (const [matchStr, score] of brandResults) {
-    if (score >= 70.0) { // Accept brand scores down to 70 for heavily scrubbed inputs
-      const associatedItems = brandMapping[matchStr];
-      for (const item of associatedItems) {
-        if (!(item.Sno in finalBrandMatches)) {
-          finalBrandMatches[item.Sno] = {
-            ...item,
-            matched_via: `Brand (${matchStr})`,
-            confidence: Math.round(score * 100) / 100
-          };
+  // B1: Apply brand aliases to resolve known STT garbles
+  let aliasedQuery = effectiveBrandQuery;
+  // Try full query match first (handles hyphenated forms like "zo-zozaeth")
+  if (BRAND_ALIASES[effectiveBrandQuery]) {
+    aliasedQuery = BRAND_ALIASES[effectiveBrandQuery];
+  } else {
+    // Then try word-by-word replacement
+    const queryWords = effectiveBrandQuery.split(/\s+/);
+    for (const word of queryWords) {
+      if (BRAND_ALIASES[word]) {
+        aliasedQuery = aliasedQuery.replace(word, BRAND_ALIASES[word]);
+      }
+    }
+  }
+
+  // B2: Generate phonetic variants (d/th, b/v, s/z)
+  const baseQueries = [effectiveBrandQuery];
+  if (aliasedQuery !== effectiveBrandQuery) {
+    baseQueries.push(aliasedQuery);
+  }
+
+  const allQueryVariants = [];
+  for (const bq of baseQueries) {
+    allQueryVariants.push(...generatePhoneticVariants(bq));
+  }
+  // Filter out variants that are too short (< 2 chars) to prevent false matches
+  const uniqueVariants = [...new Set(allQueryVariants)].filter(v => v.length >= 2);
+
+  // Helper: record a brand match
+  function recordBrandMatch(item, matchStr, score) {
+    // A8: Composite deduplication key
+    const dedupeKey = `${item.Sno}_${(item["Brand Name"] || "").toLowerCase().trim()}`;
+    if (!(dedupeKey in finalBrandMatches) || finalBrandMatches[dedupeKey].confidence < score) {
+      finalBrandMatches[dedupeKey] = {
+        ...item,
+        matched_via: `Brand (${matchStr})`,
+        confidence: Math.round(score * 100) / 100
+      };
+    }
+    if (score > brandHighestScore) {
+      brandHighestScore = score;
+    }
+  }
+
+  // ── TIER 1: Exact Normalized Match ──────────────────────────
+  // Check if any variant matches a normalizedBrandKey exactly
+  // Minimum length guard: only match keys >= 2 chars to prevent
+  // false positives on single-char brand keys (e.g. "A9" → key "a")
+  for (const variant of uniqueVariants) {
+    if (variant.length >= 2 && normalizedBrandMapping[variant]) {
+      for (const item of normalizedBrandMapping[variant]) {
+        recordBrandMatch(item, variant, 100);
+      }
+    }
+    // Also check compact form (no spaces/hyphens)
+    const compactVariant = variant.replace(/[\s\-\.]/g, "");
+    if (compactVariant.length >= 2 && normalizedBrandMapping[compactVariant]) {
+      for (const item of normalizedBrandMapping[compactVariant]) {
+        recordBrandMatch(item, compactVariant, 100);
+      }
+    }
+  }
+
+  // ── TIER 2: Fuzzy Multi-Scorer Match ────────────────────────
+  // Score each variant against both raw and normalized brand keys
+  if (brandHighestScore < 100) {
+    for (const variant of uniqueVariants) {
+      const compactVariant = variant.replace(/[\s\-\.]/g, "");
+
+      // Score against normalized brand keys (A4: multi-scorer)
+      for (const normKey of normalizedBrandKeys) {
+        const compactNormKey = normKey.replace(/[\s\-\.]/g, "");
+
+        let score = Math.max(
+          multiBrandScore(variant, normKey),
+          multiBrandScore(compactVariant, compactNormKey)
+        );
+
+        // B4: Prefix family boost
+        const variantName = splitBrandParts(variant).name;
+        const keyName = splitBrandParts(normKey).name;
+        if (variantName.length >= 3 && keyName.length >= 3) {
+          if (keyName.startsWith(variantName) || variantName.startsWith(keyName)) {
+            score = Math.max(score, 85);
+          }
+        }
+
+        if (score >= ACCEPT_THRESHOLD) {
+          // charOverlap guard for borderline scores
+          if (score < STRONG_THRESHOLD && charOverlapRatio(variant, normKey) < 0.50) {
+            continue;
+          }
+          for (const item of normalizedBrandMapping[normKey]) {
+            recordBrandMatch(item, normKey, score);
+          }
+        }
+      }
+
+      // Also score against raw brand keys for direct matches
+      for (const rawKey of brandKeys) {
+        const compactRawKey = rawKey.replace(/[\s\-\.]/g, "");
+
+        let score = Math.max(
+          multiBrandScore(variant, rawKey),
+          multiBrandScore(compactVariant, compactRawKey)
+        );
+
+        // B4: Prefix family boost
+        const variantName = splitBrandParts(variant).name;
+        const keyName = splitBrandParts(rawKey).name;
+        if (variantName.length >= 3 && keyName.length >= 3) {
+          if (keyName.startsWith(variantName) || variantName.startsWith(keyName)) {
+            score = Math.max(score, 85);
+          }
+        }
+
+        if (score >= ACCEPT_THRESHOLD) {
+          if (score < STRONG_THRESHOLD && charOverlapRatio(variant, rawKey) < 0.50) {
+            continue;
+          }
+          for (const item of brandMapping[rawKey]) {
+            recordBrandMatch(item, rawKey, score);
+          }
         }
       }
     }
   }
 
+  // ── A7: Dosage Number Boost ─────────────────────────────────
+  // If user said "Zozith 500", boost variants with matching number
+  const queryNums = extractNumbers(query);
+  if (queryNums.length > 0) {
+    for (const dedupeKey of Object.keys(finalBrandMatches)) {
+      const m = finalBrandMatches[dedupeKey];
+      const brandNums = extractNumbers(m["Brand Name"] || "");
+      if (queryNums.some(qn => brandNums.includes(qn))) {
+        m.confidence = Math.min(100, m.confidence + 10);
+        if (m.confidence > brandHighestScore) {
+          brandHighestScore = m.confidence;
+        }
+      }
+    }
+  }
+
+  // ── Collect and sort brand matches ──────────────────────────
   const brandMatchesList = Object.values(finalBrandMatches).sort((a, b) => b.confidence - a.confidence);
 
-  // If we found a very strong brand match, return it and DO NOT run composition fallback
-  if (brandHighestScore >= 80.0 && brandMatchesList.length > 0) {
-    const topScorers = brandMatchesList.filter(m => m.confidence === brandHighestScore);
-    
-    // Check if the top scorers all share the EXACT same base brand name
-    const uniqueTopBrands = new Set(topScorers.map(m => m["Brand Name"].toLowerCase().trim()));
-    
-    let status = "multiple_options"; // Default to Gate C if multiple DIFFERENT brands score 85+
-    
-    if (brandHighestScore >= 85.0) {
-      if (uniqueTopBrands.size === 1) {
-        // Only trigger Gate A / Gate B if they actually are the same brand
+  // If we found strong brand matches, return them and skip composition fallback
+  if (brandHighestScore >= STRONG_THRESHOLD && brandMatchesList.length > 0) {
+    const topScorers = brandMatchesList.filter(m => m.confidence >= EXACT_THRESHOLD);
+
+    let status = "multiple_options"; // Default Gate C
+
+    if (topScorers.length > 0) {
+      // Check if top scorers share the same base brand name family
+      const topBrandNames = topScorers.map(m => splitBrandParts(m["Brand Name"]).name);
+      const uniqueTopNames = new Set(topBrandNames);
+
+      if (uniqueTopNames.size === 1) {
         status = topScorers.length === 1 ? "exact_match" : "multiple_exact_matches";
       }
     }
@@ -148,6 +434,7 @@ export function searchMedicine(query) {
 
   // ==============================================================
   // PASS 2: COMPOSITION SEARCH FALLBACK (The 4-Layer Voice Engine)
+  // Kept IDENTICAL to the original — no changes
   // ==============================================================
   const compactQuery = cleanQuery.replace(/\s+/g, "");
   const isSingleToken = cleanQuery.split(/\s+/).filter(Boolean).length === 1;
