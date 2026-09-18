@@ -38,26 +38,33 @@ const BRAND_ALIASES = {
   "cefavl":    "cefaval",
 };
 
+// COMPOSITION-SPECIFIC ALIASES
+const COMP_ALIASES = {
+  "ceftriaxone": ["safe tree exon", "safetria exon", "safetria-exon", "pre-exon", "seftriaxon", "septriaxone"],
+  "cefixime":    ["sefixime", "sefixim"],
+  "tinidazole":  ["tinineb", "tinidazol"],
+  "simethicone": ["symthicon", "simeticone"],
+  "doxofylline": ["endoxifiline"],
+  "teicoplanin": ["tykoplanin"]
+};
+
 // ─────────────────────────────────────────────────────────────
 // PHONETIC NORMALIZERS & SCRUBBERS
 // ─────────────────────────────────────────────────────────────
-function phoneticNormalize(str) {
-  // Composition-specific aliases (existing, kept intact)
-  const ALIASES = {
-    "ceftriaxone": ["safe tree exon", "safetria exon", "safetria-exon", "pre-exon", "seftriaxon", "septriaxone"],
-    "cefixime":    ["sefixime", "sefixim"],
-    "tinidazole":  ["tinineb", "tinidazol"],
-    "simethicone": ["symthicon", "simeticone"],
-  };
-
+function applySttAliases(str) {
   let normalizedStr = str.toLowerCase();
-  for (const [canonical, mangledList] of Object.entries(ALIASES)) {
+  for (const [canonical, mangledList] of Object.entries(COMP_ALIASES)) {
     for (const mangled of mangledList) {
       if (normalizedStr.includes(mangled)) {
         normalizedStr = normalizedStr.replace(mangled, canonical);
       }
     }
   }
+  return normalizedStr;
+}
+
+function phoneticNormalize(str) {
+  let normalizedStr = applySttAliases(str);
 
   return normalizedStr
     .replace(/\bsi([aeiou])/g, "ci$1")
@@ -79,10 +86,9 @@ function phoneticNormalize(str) {
 function scrubNoise(inputStr) {
   return inputStr
     .toLowerCase()
-    .replace(/\b(mg|ml|gm|mcg|iu|spores|tablet|capsule|syrup|drop|plus|injection|softgel|sr|er|xr|dt|lb|ip|usp|bp|hcl|hbr)\b/gi, "")
-    .replace(/[0-9]+(\.[0-9]+)?/g, "")
-    .replace(/\([0-9]+:[0-9]+\)/g, "") // Strip ratios like (1:200)
-    .replace(/%/g, "") // Strip % signs
+    .replace(/[^\w\s\+]/g, " ") // Strip punctuation to avoid Fuzzball tokenization errors (keep spaces and +)
+    .replace(/[0-9]+(\.[0-9]+)?/g, "") // Strip numbers FIRST so attached words like "trihydrate250" separate
+    .replace(/\b(mg|ml|gm|mcg|iu|spores|tablet|capsule|syrup|drop|plus|injection|softgel|sr|er|xr|dt|lb|ip|usp|bp|hcl|hbr|sulfate|sulphate|trihydrate|dispersible|each|contains)\b/gi, "")
     .replace(/\s{2,}/g, " ")
     .trim();
 }
@@ -430,7 +436,7 @@ export function searchMedicine(query) {
   // PASS 2: COMPOSITION SEARCH FALLBACK (The 4-Layer Voice Engine)
   // Fix: Do NOT use phoneticNormalize for composition search!
   // ==============================================================
-  const compCleanQuery = scrubNoise(query);  // A1: Scrub query specifically for Composition matching
+  const compCleanQuery = scrubNoise(applySttAliases(query));  // A1: Scrub query specifically for Composition matching
   const compCleanQueryCompact = compCleanQuery.replace(/\s+/g, "");
   const isSingleToken = compCleanQuery.split(/\s+/).filter(Boolean).length === 1;
 
