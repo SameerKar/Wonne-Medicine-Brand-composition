@@ -430,8 +430,8 @@ export function searchMedicine(query) {
   // PASS 2: COMPOSITION SEARCH FALLBACK (The 4-Layer Voice Engine)
   // Fix: Do NOT use phoneticNormalize for composition search!
   // ==============================================================
-  const compCleanQuery = scrubNoise(query); // Use RAW query, not 'normalized'
-  const compactQuery = compCleanQuery.replace(/\s+/g, "");
+  const compCleanQuery = scrubNoise(query);  // A1: Scrub query specifically for Composition matching
+  const compCleanQueryCompact = compCleanQuery.replace(/\s+/g, "");
   const isSingleToken = compCleanQuery.split(/\s+/).filter(Boolean).length === 1;
 
   const finalCompMatches = [];
@@ -441,26 +441,57 @@ export function searchMedicine(query) {
     const rawComp = (item["Composition"] || "").toLowerCase();
     if (!rawComp || rawComp.includes("not available")) continue;
 
-    const cleanComp   = scrubNoise(rawComp);
-    const compactComp = cleanComp.replace(/\s+/g, "");
+    const cleanComp = scrubNoise(rawComp);
+    const cleanCompCompact = cleanComp.replace(/\s+/g, "");
 
-    let compScore = Math.max(
-      token_set_ratio(compCleanQuery, cleanComp),
-      token_set_ratio(compactQuery, cleanComp),
-      token_set_ratio(compCleanQuery, compactComp)
-    );
+    let compScore = 0;
+    if (cleanCompCompact.includes(compCleanQueryCompact)) {
+      compScore = 100;
+    } else {
+      let fullScore = Math.max(
+        token_set_ratio(compCleanQuery, cleanComp),
+        token_set_ratio(compCleanQueryCompact, cleanCompCompact)
+      );
 
-    if (isSingleToken) {
-      compScore = Math.max(compScore, partial_ratio(compCleanQuery, cleanComp));
-      const saltCount = rawComp.split(/\+/).length;
-      if (saltCount > 2) {
-        compScore = Math.min(compScore, 88);
+      if (isSingleToken) {
+        const partial = partial_ratio(compCleanQuery, cleanComp);
+        fullScore = Math.max(fullScore, partial);
+      }
+
+      let maxSaltScore = 0;
+      const salts = cleanComp.split('+').map(s => s.trim());
+      for (const salt of salts) {
+        let saltScore = Math.max(
+          token_set_ratio(compCleanQuery, salt),
+          token_set_ratio(compCleanQueryCompact, salt.replace(/\s+/g, ""))
+        );
+        if (isSingleToken) {
+          saltScore = Math.max(saltScore, partial_ratio(compCleanQuery, salt));
+        }
+        if (saltScore > maxSaltScore) maxSaltScore = saltScore;
+      }
+
+      compScore = fullScore;
+      if (maxSaltScore < 80) {
+        compScore = maxSaltScore;
       }
     }
 
+    const saltCount = rawComp.split(/\+/).length;
+    if (saltCount > 2) {
+      compScore = Math.min(compScore, 88);
+    }
+
     if (compScore >= 80.0) {
-      if (compScore < 86 && charOverlapRatio(compCleanQuery, cleanComp) < 0.55) {
-        continue; // Reject borderline false-positives (like Azithrocillin)
+      if (compScore < 86) {
+        let maxOverlap = 0;
+        const salts = cleanComp.split('+').map(s => s.trim());
+        for (const salt of salts) {
+          maxOverlap = Math.max(maxOverlap, charOverlapRatio(compCleanQuery, salt));
+        }
+        if (maxOverlap < 0.55) {
+          continue;
+        }
       }
 
       finalCompMatches.push({
