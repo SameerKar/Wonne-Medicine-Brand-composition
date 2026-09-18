@@ -338,6 +338,7 @@ export function searchMedicine(query) {
         multiBrandScore(variant, normKey),
         multiBrandScore(compactVariant, compactNormKey)
       );
+      if (score === 78) console.log("SCORE78 NORM:", variant, normKey);
 
         // B4: Prefix family boost
         const variantName = splitBrandParts(variant).name;
@@ -367,6 +368,7 @@ export function searchMedicine(query) {
           multiBrandScore(variant, rawKey),
           multiBrandScore(compactVariant, compactRawKey)
         );
+        if (score === 78) console.log("SCORE78 RAW:", variant, rawKey);
 
         // B4: Prefix family boost
         const variantName = splitBrandParts(variant).name;
@@ -407,23 +409,21 @@ export function searchMedicine(query) {
   // ── Collect and sort brand matches ──────────────────────────
   const brandMatchesList = Object.values(finalBrandMatches).sort((a, b) => b.confidence - a.confidence);
 
-  // If we found strong brand matches, return them and skip composition fallback
+  let brandStatus = "multiple_options";
   if (brandHighestScore >= STRONG_THRESHOLD && brandMatchesList.length > 0) {
     const topScorers = brandMatchesList.filter(m => m.confidence >= EXACT_THRESHOLD);
-
-    let status = "multiple_options"; // Default Gate C
-
     if (topScorers.length > 0) {
-      // Check if top scorers share the same base brand name family
       const topBrandNames = topScorers.map(m => splitBrandParts(m["Brand Name"]).name);
       const uniqueTopNames = new Set(topBrandNames);
-
       if (uniqueTopNames.size === 1) {
-        status = topScorers.length === 1 ? "exact_match" : "multiple_exact_matches";
+        brandStatus = topScorers.length === 1 ? "exact_match" : "multiple_exact_matches";
       }
     }
+  }
 
-    return { status, matches: brandMatchesList.slice(0, 15) };
+  // If we found EXACT brand matches, return them immediately to save CPU
+  if (brandHighestScore >= EXACT_THRESHOLD && brandMatchesList.length > 0) {
+    return { status: brandStatus, matches: brandMatchesList.slice(0, 15) };
   }
 
   // ==============================================================
@@ -477,15 +477,27 @@ export function searchMedicine(query) {
 
   finalCompMatches.sort((a, b) => b.confidence - a.confidence);
 
-  if (finalCompMatches.length === 0) {
-    return { status: "no_match", matches: [] };
-  }
-
-  let status = "multiple_options";
+  let compStatus = "multiple_options";
   if (compHighestScore >= 85.0) {
     const topScorers = finalCompMatches.filter(m => m.confidence === compHighestScore);
-    status = topScorers.length === 1 ? "exact_match" : "multiple_exact_matches";
+    compStatus = topScorers.length === 1 ? "exact_match" : "multiple_exact_matches";
   }
 
-  return { status, matches: finalCompMatches.slice(0, 15) };
+  // ==============================================================
+  // DECISION MATRIX (If neither was an EXACT match initially)
+  // ==============================================================
+  // 1. If Composition had a very strong match (> brand), Composition wins
+  if (compHighestScore >= 85.0 && compHighestScore > brandHighestScore) {
+    return { status: compStatus, matches: finalCompMatches.slice(0, 15) };
+  }
+  // 2. Otherwise if Brand passed acceptance, Brand wins
+  if (brandHighestScore >= ACCEPT_THRESHOLD && brandHighestScore >= compHighestScore) {
+    return { status: brandStatus, matches: brandMatchesList.slice(0, 15) };
+  }
+  // 3. Otherwise if Composition passed acceptance, Composition wins
+  if (compHighestScore >= 80.0) {
+    return { status: compStatus, matches: finalCompMatches.slice(0, 15) };
+  }
+
+  return { status: "no_match", matches: [] };
 }
