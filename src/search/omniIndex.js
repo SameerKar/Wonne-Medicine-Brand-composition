@@ -79,9 +79,10 @@ function phoneticNormalize(str) {
 function scrubNoise(inputStr) {
   return inputStr
     .toLowerCase()
-    .replace(/\b(mg|ml|gm|mcg|iu|spores|tablet|capsule|syrup|drop|plus|injection|sr|er|xr|dt|lb|ip|usp|bp|hcl|hbr)\b/gi, "")
-    .replace(/\b(hydrochloride|hydro|chloride|sulphate|sulfate|sodium|potassium|acid|cholic|oxide|nitrate|citrate|gluconate|acetate|tartrate|succinate|fumarate|maleate|monohydrate|trihydrate|dihydrate|anhydrous|anhydrous|phosphate|carbonate|bicarbonate)\b/gi, "")
+    .replace(/\b(mg|ml|gm|mcg|iu|spores|tablet|capsule|syrup|drop|plus|injection|softgel|sr|er|xr|dt|lb|ip|usp|bp|hcl|hbr)\b/gi, "")
     .replace(/[0-9]+(\.[0-9]+)?/g, "")
+    .replace(/\([0-9]+:[0-9]+\)/g, "") // Strip ratios like (1:200)
+    .replace(/%/g, "") // Strip % signs
     .replace(/\s{2,}/g, " ")
     .trim();
 }
@@ -91,9 +92,7 @@ function brandScrubNoise(inputStr) {
   return inputStr
     .toLowerCase()
     // Strip units and dosage forms
-    .replace(/\b(mg|ml|gm|mcg|iu|spores|tablet|capsule|syrup|drop|injection|ip|usp|bp|hcl|hbr)\b/gi, "")
-    // Strip chemical descriptors
-    .replace(/\b(hydrochloride|hydro|chloride|sulphate|sulfate|sodium|potassium|acid|cholic|oxide|nitrate|citrate|gluconate|acetate|tartrate|succinate|fumarate|maleate|monohydrate|trihydrate|dihydrate|anhydrous|phosphate|carbonate|bicarbonate)\b/gi, "")
+    .replace(/\b(mg|ml|gm|mcg|iu|spores|tablet|capsule|syrup|drop|injection|softgel|ip|usp|bp|hcl|hbr)\b/gi, "")
     // Strip numbers
     .replace(/[0-9]+(\.[0-9]+)?/g, "")
     // DO NOT strip: plus, forte, gold, duo, cv, lb, oz, sr, er, xr, dt
@@ -168,35 +167,32 @@ function getBrandExactThreshold(queryLength) {
 // consonant confusions. Safe: doesn't mutate original, just
 // explores alternatives during scoring.
 // ─────────────────────────────────────────────────────────────
-function generatePhoneticVariants(query) {
-  const variants = [query];
+function generatePhoneticVariants(baseStr) {
+  const variants = new Set([baseStr]);
 
-  // d/th confusion (very common in Hindi STT: "zozid" ↔ "zozith")
-  if (/th/.test(query)) {
-    variants.push(query.replace(/th/g, "d"));
-  }
-  if (/d/.test(query)) {
-    variants.push(query.replace(/d\b/g, "th"));    // terminal d → th
-    variants.push(query.replace(/d/g, "th"));       // any d → th
-  }
+  // Bidirectional + positional: replace EACH occurrence individually
+  const maps = [
+    ["d", "th"], ["th", "d"],
+    ["b", "v"],  ["v", "b"],
+    ["s", "z"],  ["z", "s"],
+    // Forward: c can sound like s, x, k
+    ["c", "s"],  ["c", "x"],  ["c", "k"],
+    // Reverse: k/x can sound like c (Hindi speakers)
+    ["k", "c"],  ["x", "c"],
+    // Vowel contractions common in Hindi STT
+    ["oo", "u"], ["ee", "i"], ["eu", "u"],
+    // Trailing suffix fixes
+    ["ks", "x"],  ["ck", "k"],
+  ];
 
-  // b/v confusion (common in Hindi: "nibo" ↔ "nivo")
-  if (query.includes("b")) {
-    variants.push(query.replace(/b/g, "v"));
-  }
-  if (query.includes("v")) {
-    variants.push(query.replace(/v/g, "b"));
-  }
-
-  // s/z confusion
-  if (query.includes("s") && !query.includes("sh")) {
-    variants.push(query.replace(/s/g, "z"));
-  }
-  if (query.includes("z")) {
-    variants.push(query.replace(/z/g, "s"));
+  for (const [from, to] of maps) {
+    let idx = -1;
+    while ((idx = baseStr.indexOf(from, idx + 1)) !== -1) {
+      variants.add(baseStr.slice(0, idx) + to + baseStr.slice(idx + from.length));
+    }
   }
 
-  return [...new Set(variants)];
+  return Array.from(variants);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -331,18 +327,17 @@ export function searchMedicine(query) {
 
   // ── TIER 2: Fuzzy Multi-Scorer Match ────────────────────────
   // Score each variant against both raw and normalized brand keys
-  if (brandHighestScore < 100) {
-    for (const variant of uniqueVariants) {
-      const compactVariant = variant.replace(/[\s\-\.]/g, "");
+  for (const variant of uniqueVariants) {
+    const compactVariant = variant.replace(/[\s\-\.]/g, "");
 
-      // Score against normalized brand keys (A4: multi-scorer)
-      for (const normKey of normalizedBrandKeys) {
-        const compactNormKey = normKey.replace(/[\s\-\.]/g, "");
+    // Score against normalized brand keys (A4: multi-scorer)
+    for (const normKey of normalizedBrandKeys) {
+      const compactNormKey = normKey.replace(/[\s\-\.]/g, "");
 
-        let score = Math.max(
-          multiBrandScore(variant, normKey),
-          multiBrandScore(compactVariant, compactNormKey)
-        );
+      let score = Math.max(
+        multiBrandScore(variant, normKey),
+        multiBrandScore(compactVariant, compactNormKey)
+      );
 
         // B4: Prefix family boost
         const variantName = splitBrandParts(variant).name;
@@ -392,7 +387,6 @@ export function searchMedicine(query) {
         }
       }
     }
-  }
 
   // ── A7: Dosage Number Boost ─────────────────────────────────
   // If user said "Zozith 500", boost variants with matching number
@@ -429,15 +423,16 @@ export function searchMedicine(query) {
       }
     }
 
-    return { status, matches: brandMatchesList.slice(0, 9) };
+    return { status, matches: brandMatchesList.slice(0, 15) };
   }
 
   // ==============================================================
   // PASS 2: COMPOSITION SEARCH FALLBACK (The 4-Layer Voice Engine)
-  // Kept IDENTICAL to the original — no changes
+  // Fix: Do NOT use phoneticNormalize for composition search!
   // ==============================================================
-  const compactQuery = cleanQuery.replace(/\s+/g, "");
-  const isSingleToken = cleanQuery.split(/\s+/).filter(Boolean).length === 1;
+  const compCleanQuery = scrubNoise(query); // Use RAW query, not 'normalized'
+  const compactQuery = compCleanQuery.replace(/\s+/g, "");
+  const isSingleToken = compCleanQuery.split(/\s+/).filter(Boolean).length === 1;
 
   const finalCompMatches = [];
   let compHighestScore = 0;
@@ -450,13 +445,13 @@ export function searchMedicine(query) {
     const compactComp = cleanComp.replace(/\s+/g, "");
 
     let compScore = Math.max(
-      token_set_ratio(cleanQuery,   cleanComp),
+      token_set_ratio(compCleanQuery, cleanComp),
       token_set_ratio(compactQuery, cleanComp),
-      token_set_ratio(cleanQuery,   compactComp)
+      token_set_ratio(compCleanQuery, compactComp)
     );
 
     if (isSingleToken) {
-      compScore = Math.max(compScore, partial_ratio(cleanQuery, cleanComp));
+      compScore = Math.max(compScore, partial_ratio(compCleanQuery, cleanComp));
       const saltCount = rawComp.split(/\+/).length;
       if (saltCount > 2) {
         compScore = Math.min(compScore, 88);
@@ -464,7 +459,7 @@ export function searchMedicine(query) {
     }
 
     if (compScore >= 80.0) {
-      if (compScore < 86 && charOverlapRatio(cleanQuery, cleanComp) < 0.55) {
+      if (compScore < 86 && charOverlapRatio(compCleanQuery, cleanComp) < 0.55) {
         continue; // Reject borderline false-positives (like Azithrocillin)
       }
 
@@ -492,5 +487,5 @@ export function searchMedicine(query) {
     status = topScorers.length === 1 ? "exact_match" : "multiple_exact_matches";
   }
 
-  return { status, matches: finalCompMatches.slice(0, 9) };
+  return { status, matches: finalCompMatches.slice(0, 15) };
 }
