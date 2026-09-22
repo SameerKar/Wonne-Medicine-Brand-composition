@@ -88,7 +88,7 @@ function scrubNoise(inputStr) {
     .toLowerCase()
     .replace(/[^\w\s\+]/g, " ") // Strip punctuation to avoid Fuzzball tokenization errors (keep spaces and +)
     .replace(/[0-9]+(\.[0-9]+)?/g, "") // Strip numbers FIRST so attached words like "trihydrate250" separate
-    .replace(/\b(mg|ml|gm|mcg|iu|spores|tablet|capsule|syrup|drop|plus|injection|softgel|sr|er|xr|dt|lb|ip|usp|bp|hcl|hbr|sulfate|sulphate|trihydrate|dispersible|each|contains)\b/gi, "")
+    .replace(/\b(mg|ml|gm|mcg|iu|spores|tablet|capsule|syrup|drop|plus|injection|softgel|sr|er|xr|dt|lb|ip|usp|bp|hcl|hbr|sulfate|sulphate|trihydrate|dispersible|each|contains|face|wash|shampoo|facewash|moisturizer|cleanser|toner|sunscreen|conditioner|mask|scrub|whitening|aging)\b/gi, "")
     .replace(/\s{2,}/g, " ")
     .trim();
 }
@@ -440,6 +440,8 @@ export function searchMedicine(query) {
   const compCleanQueryCompact = compCleanQuery.replace(/\s+/g, "");
   const isSingleToken = compCleanQuery.split(/\s+/).filter(Boolean).length === 1;
 
+  const hasCosmeticTerm = /\b(face|wash|shampoo|facewash|moisturizer|cleanser|toner|sunscreen|conditioner|mask|scrub|whitening|aging)\b/i.test(query);
+
   const finalCompMatches = [];
   let compHighestScore = 0;
 
@@ -486,6 +488,13 @@ export function searchMedicine(query) {
     const saltCount = rawComp.split(/\+/).length;
     if (saltCount > 2) {
       compScore = Math.min(compScore, 88);
+    }
+
+    if (hasCosmeticTerm) {
+      const isItemCosmetic = /\b(face|wash|shampoo|facewash|moisturizer|cleanser|toner|sunscreen|conditioner|mask|scrub|whitening|aging)\b/i.test((item.Dosage || "") + " " + (item["Brand Name"] || "") + " " + rawComp);
+      if (!isItemCosmetic) {
+        compScore = Math.min(compScore, 50);
+      }
     }
 
     if (compScore >= 80.0) {

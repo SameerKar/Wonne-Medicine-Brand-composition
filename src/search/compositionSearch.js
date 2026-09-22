@@ -96,8 +96,8 @@ function phoneticNormalize(str) {
 function scrubNoise(inputStr) {
   return inputStr
     .toLowerCase()
-    // ── Pharma form / route / standard suffixes ──────────────
-    .replace(/\b(mg|ml|gm|mcg|iu|spores|tablet|capsule|syrup|drop|plus|injection|sr|er|xr|dt|lb|ip|usp|bp|hcl|hbr)\b/gi, "")
+    // ── Pharma form / route / standard suffixes + Cosmetic terms ──────────────
+    .replace(/\b(mg|ml|gm|mcg|iu|spores|tablet|capsule|syrup|drop|plus|injection|sr|er|xr|dt|lb|ip|usp|bp|hcl|hbr|face|wash|shampoo|facewash|moisturizer|cleanser|toner|sunscreen|conditioner|mask|scrub|whitening|aging)\b/gi, "")
     // ── Salt / chemical descriptor words often spoken aloud ──
     // These are NOT part of the core chemical name but retailers
     // frequently say them: "Ambroxol Hydro Chloride",
@@ -175,6 +175,8 @@ export function searchByComposition(query) {
   const isSingleToken =
     cleanQuery.split(/\s+/).filter(Boolean).length === 1;
 
+  const hasCosmeticTerm = /\b(face|wash|shampoo|facewash|moisturizer|cleanser|toner|sunscreen|conditioner|mask|scrub|whitening|aging)\b/i.test(query);
+
   const finalMatches = [];
   let highestScore = 0;
 
@@ -218,6 +220,13 @@ export function searchByComposition(query) {
       const saltCount = rawComp.split(/\+/).length;
       if (saltCount > 2) {
         compScore = Math.min(compScore, 88);
+      }
+    }
+
+    if (hasCosmeticTerm) {
+      const isItemCosmetic = /\b(face|wash|shampoo|facewash|moisturizer|cleanser|toner|sunscreen|conditioner|mask|scrub|whitening|aging)\b/i.test((item.Dosage || "") + " " + (item["Brand Name"] || "") + " " + rawComp);
+      if (!isItemCosmetic) {
+        compScore = Math.min(compScore, 50);
       }
     }
 
